@@ -52,6 +52,7 @@ function TunnelingAgent(options) {
   self.maxSockets = self.options.maxSockets || http.Agent.defaultMaxSockets
   self.requests = []
   self.sockets = []
+  self.freeSockets = []
 
   self.on('free', function onFree(socket, host, port) {
     for (var i = 0, len = self.requests.length; i < len; ++i) {
@@ -64,8 +65,10 @@ function TunnelingAgent(options) {
         return
       }
     }
-    socket.destroy()
-    self.removeSocket(socket)
+
+    if (self.freeSockets.indexOf(socket) === -1) {
+      self.freeSockets.push(socket)
+    }
   })
 }
 util.inherits(TunnelingAgent, events.EventEmitter)
@@ -80,6 +83,12 @@ TunnelingAgent.prototype.addRequest = function addRequest(req, options) {
       port: arguments[2],
       path: arguments[3]
     };
+  }
+
+  if (self.freeSockets.length > 0) {
+    const socket = self.freeSockets.shift()
+    req.onSocket(socket)
+    return
   }
 
   if (self.sockets.length >= this.maxSockets) {
@@ -106,6 +115,7 @@ TunnelingAgent.prototype.createConnection = function createConnection(pending) {
     }
 
     function onCloseOrRemove(err) {
+      debug('socket close ' + err)
       self.removeSocket(socket)
       socket.removeListener('free', onFree)
       socket.removeListener('close', onCloseOrRemove)
@@ -182,10 +192,17 @@ TunnelingAgent.prototype.createSocket = function createSocket(options, cb) {
 }
 
 TunnelingAgent.prototype.removeSocket = function removeSocket(socket) {
-  var pos = this.sockets.indexOf(socket)
-  if (pos === -1) return
+  const pos = this.sockets.indexOf(socket)
+  const freePos = this.freeSockets.indexOf(socket)
+  if (pos === -1 && freePos === -1) return
 
   this.sockets.splice(pos, 1)
+  this.freeSockets.splice(freePos, 1)
+
+  if (socket.destroy) {
+    socket.destroy()
+    debug('socket destroyed')
+  }
 
   var pending = this.requests.shift()
   if (pending) {
